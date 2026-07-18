@@ -1,0 +1,36 @@
+name: Medicinpris-datasæt
+
+# Bygger det kompakte on-device datasæt hver 14. dag + manuelt. Vedhæfter det som
+# release-asset som appen henter. Kræver at repoet ligger på GitHub (privat).
+on:
+  schedule:
+    - cron: "0 5 */14 * *"   # ~hver 14. dag kl. 05:00 UTC
+  workflow_dispatch:          # manuel kør (spec: "kør den manuelt først")
+
+permissions:
+  contents: write            # til at oprette release + vedhæfte asset
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Installer afhængigheder
+        working-directory: tools/medicinpris-pipeline
+        run: pip install -r requirements.txt
+
+      - name: Byg datasæt
+        working-directory: tools/medicinpris-pipeline
+        run: python build_dataset.py --build --out medicinpriser.json.gz
+
+      - name: Udgiv som release-asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: medicinpriser-${{ github.run_number }}
+          name: Medicinpris-datasæt ${{ github.run_number }}
+          files: tools/medicinpris-pipeline/medicinpriser.json.gz
