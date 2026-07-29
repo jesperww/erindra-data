@@ -16,18 +16,20 @@ import argparse
 import gzip
 import io
 import json
+import re
 import sys
 from datetime import date
 
 import requests
 from openpyxl import load_workbook
 
-# Source: eSundhed/Medicinpriser (moved to sundhedsdatabank.dk). Verify/refresh this URL — the
-# path is dated. See README "Åbne spørgsmål".
-SOURCE_URL = (
-    "https://cdn1.gopublic.dk/sundhedsdatastyrelsen/Media/639177217206502773/"
-    "26_00015-13-medicinpriser-udgivet-22062026-4609666_1_0.xlsx"
-)
+# The Medicinpriser workbook is republished every ~14 days at a NEW, dated URL — the previous file
+# 404s once superseded (that broke the daily build 2026-07-29). So we DISCOVER the current file from
+# the landing page instead of hard-coding it. The page moved esundhed.dk → sundhedsdatabank.dk
+# (2025); it links the latest "medicinpriser-udgivet-<DDMMYYYY>.xlsx" on the gopublic CDN.
+LANDING_URL = "https://sundhedsdatabank.dk/medicin/medicinpriser"
+XLSX_RE = re.compile(r'https://[^\s"\'<>]*medicinpriser-udgivet-\d{6,8}[^\s"\'<>]*\.xlsx', re.IGNORECASE)
+UA = {"User-Agent": "erindra-data build (+https://github.com/jesperww/erindra-data)"}
 SOURCE_LABEL = "Lægemiddelstyrelsen / Medicinpriser"
 MAX_BYTES = 3 * 1024 * 1024  # spec acceptkriterie 5
 
@@ -47,9 +49,32 @@ COLUMN_MAP = {
 }
 
 
+def current_source_url() -> str:
+    """Discover the latest medicinpriser .xlsx URL from the landing page (the URL is dated + rotates)."""
+    print(f"Slår aktuel medicinpris-fil op på {LANDING_URL} …", file=sys.stderr)
+    resp = requests.get(LANDING_URL, timeout=120, headers=UA)
+    resp.raise_for_status()
+    matches = XLSX_RE.findall(resp.text)
+    if not matches:
+        raise SystemExit(
+            f"Fandt intet 'medicinpriser-udgivet-*.xlsx'-link på {LANDING_URL}. "
+            "Er siden flyttet/omlagt igen? Tjek den i en browser og opdatér LANDING_URL/XLSX_RE."
+        )
+
+    # Pick the newest by the DDMMYYYY date in the filename (there is normally only one link).
+    def date_key(url: str) -> str:
+        m = re.search(r"udgivet-(\d{2})(\d{2})(\d{4})", url)
+        return (m.group(3) + m.group(2) + m.group(1)) if m else ""  # → YYYYMMDD, sortable
+
+    url = max(dict.fromkeys(matches), key=date_key)
+    print(f"  → {url}", file=sys.stderr)
+    return url
+
+
 def download() -> bytes:
-    print(f"Henter {SOURCE_URL} …", file=sys.stderr)
-    resp = requests.get(SOURCE_URL, timeout=300)
+    url = current_source_url()
+    print(f"Henter {url} …", file=sys.stderr)
+    resp = requests.get(url, timeout=300, headers=UA)
     resp.raise_for_status()
     print(f"  {len(resp.content):,} bytes", file=sys.stderr)
     return resp.content
