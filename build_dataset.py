@@ -26,8 +26,10 @@ from openpyxl import load_workbook
 # The Medicinpriser workbook is republished every ~14 days at a NEW, dated URL — the previous file
 # 404s once superseded (that broke the daily build 2026-07-29). So we DISCOVER the current file from
 # the landing page instead of hard-coding it. The page moved esundhed.dk → sundhedsdatabank.dk
-# (2025); it links the latest "medicinpriser-udgivet-<DDMMYYYY>.xlsx" on the gopublic CDN.
-LANDING_URL = "https://sundhedsdatabank.dk/medicin/medicinpriser"
+# (2025), then a "medicinpriser-menu" segment was inserted (2026-08: /medicin/medicinpriser →
+# /medicin/medicinpriser-menu/medicinpriser — the old path now 404s, which broke the build 2026-08-15).
+# The page links the latest "medicinpriser-udgivet-<DDMMYYYY>.xlsx" on the gopublic CDN (server-rendered).
+LANDING_URL = "https://sundhedsdatabank.dk/medicin/medicinpriser-menu/medicinpriser"
 XLSX_RE = re.compile(r'https://[^\s"\'<>]*medicinpriser-udgivet-\d{6,8}[^\s"\'<>]*\.xlsx', re.IGNORECASE)
 UA = {"User-Agent": "erindra-data build (+https://github.com/jesperww/erindra-data)"}
 SOURCE_LABEL = "Lægemiddelstyrelsen / Medicinpriser"
