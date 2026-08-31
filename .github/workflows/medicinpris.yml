@@ -1,24 +1,48 @@
 name: Medicinpris-datasæt
 
-# Bygger det kompakte on-device datasæt og vedhæfter det som release-asset, som appen henter.
-# Pipeline-filerne ligger i repo-roden (offentligt repo).
+# Bygger det kompakte on-device datasæt hver 14. dag + manuelt. Vedhæfter det som
+# release-asset som appen henter. Pipeline-filerne ligger i repo-roden (offentligt repo).
 #
-# KADENCE: kilden (takstperioden) udgives ~hver 14. dag, men på datoer vi ikke kan forudsige.
-# Den gamle plan "0 5 */14 * *" ramte IKKE hver 14. dag: dag-i-måned-feltet nulstilles hver måned,
-# så den fyrede d. 1., 15. og 29. — mellemrummet 29. → 1. er 2-4 dage, og en takstperiode udgivet
-# d. 2. lå 13 dage ubemærket. Vi kører derfor ugentligt (mandag). Det er en fast kadence uden drift,
-# og den garanterer at hver 14-dages-udgivelse er hentet inden for en uge. Udgivelsen navngives
-# efter takstperioden, så en uændret kilde opdaterer den samme release i stedet for at lave en ny.
+# KADENCE — hvorfor der både er en cron OG et gate-job:
+# Kilden udgives hver 14. dag, mandage (03-08, 17-08, 31-08, 14-09, 28-09-2026 …).
+# Cron kan ikke udtrykke et 14-dages-interval: dag-i-måned-feltet ("*/14") nulstilles hver måned og
+# fyrer d. 1., 15. og 29., og ugedags-feltet kender kun ugen. Derfor fyrer cron'en hver mandag, og
+# "kadence"-jobbet slipper kun hver anden igennem — det er de mandage hvor dagsnummeret siden epoch
+# går op i 14. Nettoresultatet er bogstaveligt hver 14. dag, uden drift, ramt på udgivelsesdagen.
 on:
   schedule:
-    - cron: "0 5 * * 1"       # hver mandag kl. 05:00 UTC — fanger hver 14-dages-udgivelse
+    - cron: "0 5 * * 1"       # hver mandag kl. 05:00 UTC — kadence-jobbet halverer til hver 14. dag
   workflow_dispatch:          # manuel kør (spec: "kør den manuelt først")
 
 permissions:
   contents: write            # til at oprette release + vedhæfte asset
 
 jobs:
+  kadence:
+    runs-on: ubuntu-latest
+    outputs:
+      byg: ${{ steps.check.outputs.byg }}
+    steps:
+      - name: Er i dag en udgivelsesdag (hver 14. dag)?
+        id: check
+        run: |
+          # Manuel kør bygger altid — gaten gælder kun den planlagte kadence.
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "byg=ja" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Dage siden epoch. Udgivelsesdagene (03-08-2026 osv.) har alle rest 4 ved division med
+          # 14, så resten fastholder fasen for evigt uden en tabel over fremtidige datoer.
+          dage=$(( $(date -u +%s) / 86400 ))
+          if [ $(( dage % 14 )) -eq 4 ]; then
+            echo "byg=ja" >> "$GITHUB_OUTPUT"
+          else
+            echo "byg=nej" >> "$GITHUB_OUTPUT"
+            echo "Mellemliggende mandag — næste udgivelse er om 7 dage. Springer over." >&2
+          fi
+
   build:
+    needs: kadence
+    if: needs.kadence.outputs.byg == 'ja'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -31,29 +55,11 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Byg datasæt
-        run: python build_dataset.py --build --out medicinpriser.json.gz --meta-out meta.json
-
-      - name: Læs takstperiode fra kilden
-        id: meta
-        run: |
-          echo "takstperiode=$(jq -r .takstperiode meta.json)" >> "$GITHUB_OUTPUT"
-          echo "fil=$(jq -r .kilde.fil meta.json)" >> "$GITHUB_OUTPUT"
-          echo "sha256=$(jq -r .kilde.sha256 meta.json)" >> "$GITHUB_OUTPUT"
+        run: python build_dataset.py --build --out medicinpriser.json.gz
 
       - name: Udgiv som release-asset
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: medicinpriser-${{ steps.meta.outputs.takstperiode }}
-          name: Medicinpris-datasæt · takstperiode ${{ steps.meta.outputs.takstperiode }}
-          make_latest: true
-          body: |
-            Takstperiode: **${{ steps.meta.outputs.takstperiode }}** (datoen dataene stammer fra)
-            Bygget: ${{ github.run_id }} · ${{ github.run_number }}
-
-            Kilde: `${{ steps.meta.outputs.fil }}`
-            SHA-256: `${{ steps.meta.outputs.sha256 }}`
-
-            Kæde: Lægemiddelstyrelsen (data) → Sundhedsdatastyrelsen (udgivelse) → erindra-data (pipeline).
-          files: |
-            medicinpriser.json.gz
-            meta.json
+          tag_name: medicinpriser-${{ github.run_number }}
+          name: Medicinpris-datasæt ${{ github.run_number }}
+          files: medicinpriser.json.gz

@@ -14,12 +14,11 @@ from __future__ import annotations
 
 import argparse
 import gzip
-import hashlib
 import io
 import json
 import re
 import sys
-from datetime import date, datetime, timezone
+from datetime import date
 
 import requests
 from openpyxl import load_workbook
@@ -35,15 +34,12 @@ XLSX_RE = re.compile(r'https://[^\s"\'<>]*medicinpriser-udgivet-\d{6,8}[^\s"\'<>
 UA = {"User-Agent": "erindra-data build (+https://github.com/jesperww/erindra-data)"}
 MAX_BYTES = 3 * 1024 * 1024  # spec acceptkriterie 5
 
-# The chain the data actually travels, not a claim about it: Lægemiddelstyrelsen owns the
-# Medicinpriser data, Sundhedsdatastyrelsen publishes it as a dated takstperiode-workbook on
-# sundhedsdatabank.dk, and this repo's pipeline reduces it to the compact on-device dataset.
-# What makes the chain *checkable* rather than asserted is the "kilde" block written below:
-# the exact source filename, its URL, its SHA-256 and when we fetched it — anyone can re-download
-# the same file and reproduce the hash.
+# The chain the data actually travels: Lægemiddelstyrelsen owns the Medicinpriser data,
+# Sundhedsdatastyrelsen publishes it as a dated takstperiode-workbook on sundhedsdatabank.dk, and
+# this repo's pipeline reduces it to the compact on-device dataset. Both authorities are named
+# because neither alone is the source.
 SOURCE_CHAIN = ("Lægemiddelstyrelsen (data) → Sundhedsdatastyrelsen (udgivelse, sundhedsdatabank.dk)"
                 " → erindra-data (pipeline)")
-PIPELINE = "jesperww/erindra-data · build_dataset.py"
 
 
 def takstperiode_from_url(url: str) -> str:
@@ -102,21 +98,14 @@ def current_source_url() -> str:
     return url
 
 
-def download() -> tuple[bytes, dict]:
-    """Returns the workbook bytes plus the provenance of the exact file we got."""
+def download() -> tuple[bytes, str]:
+    """Returns the workbook bytes plus the URL we got them from — the URL carries the takstperiode."""
     url = current_source_url()
     print(f"Henter {url} …", file=sys.stderr)
     resp = requests.get(url, timeout=300, headers=UA)
     resp.raise_for_status()
     print(f"  {len(resp.content):,} bytes", file=sys.stderr)
-    kilde = {
-        "fil": url.rsplit("/", 1)[-1],
-        "url": url,
-        "sha256": hashlib.sha256(resp.content).hexdigest(),
-        "bytes": len(resp.content),
-        "hentet": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-    }
-    return resp.content, kilde
+    return resp.content, url
 
 
 def inspect(data: bytes) -> None:
@@ -133,7 +122,7 @@ def inspect(data: bytes) -> None:
                 break
 
 
-def build(data: bytes, kilde: dict) -> bytes:
+def build(data: bytes, url: str) -> bytes:
     wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     if SHEET_NAME not in wb.sheetnames:
         raise SystemExit(f"Fandt ikke arket '{SHEET_NAME}'. Ark: {wb.sheetnames}")
@@ -166,13 +155,11 @@ def build(data: bytes, kilde: dict) -> bytes:
         # Latest row wins (the sheet is chronological); keep overwriting.
         records[vnr] = record
 
-    takstperiode = takstperiode_from_url(kilde["url"])
+    takstperiode = takstperiode_from_url(url)
     dataset = {
         "version": date.today().isoformat(),   # when WE built it (kept: old clients read this)
         "takstperiode": takstperiode,          # when the DATA is from — the honest age of the register
         "source": SOURCE_CHAIN,
-        "pipeline": PIPELINE,
-        "kilde": kilde,                        # verifiable provenance: fil, url, sha256, hentet
         "records": records,
     }
     raw = json.dumps(dataset, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -189,28 +176,19 @@ def main() -> None:
     ap.add_argument("--inspect", action="store_true", help="print sheets/columns/sample rows")
     ap.add_argument("--build", action="store_true", help="build the compact gzipped dataset")
     ap.add_argument("--out", default="medicinpriser.json.gz")
-    ap.add_argument("--meta-out", default=None,
-                    help="skriv provenance (takstperiode, kilde) som JSON — bruges af workflow'et "
-                         "til at navngive udgivelsen efter takstperioden i stedet for løbenummer")
     args = ap.parse_args()
 
     if not (args.inspect or args.build):
         ap.error("angiv --inspect eller --build")
 
-    data, kilde = download()
+    data, url = download()
     if args.inspect:
         inspect(data)
     if args.build:
-        packed = build(data, kilde)
+        packed = build(data, url)
         with open(args.out, "wb") as f:
             f.write(packed)
         print(f"Skrev {args.out}", file=sys.stderr)
-        if args.meta_out:
-            meta = {"takstperiode": takstperiode_from_url(kilde["url"]),
-                    "bygget": date.today().isoformat(), "kilde": kilde}
-            with open(args.meta_out, "w", encoding="utf-8") as f:
-                json.dump(meta, f, ensure_ascii=False, indent=2)
-            print(f"Skrev {args.meta_out}", file=sys.stderr)
 
 
 if __name__ == "__main__":
