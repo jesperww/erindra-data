@@ -1,10 +1,17 @@
 name: Medicinpris-datasæt
 
-# Bygger det kompakte on-device datasæt hver 14. dag + manuelt. Vedhæfter det som
-# release-asset som appen henter. Pipeline-filerne ligger i repo-roden (offentligt repo).
+# Bygger det kompakte on-device datasæt og vedhæfter det som release-asset, som appen henter.
+# Pipeline-filerne ligger i repo-roden (offentligt repo).
+#
+# KADENCE: kilden (takstperioden) udgives ~hver 14. dag, men på datoer vi ikke kan forudsige.
+# Den gamle plan "0 5 */14 * *" ramte IKKE hver 14. dag: dag-i-måned-feltet nulstilles hver måned,
+# så den fyrede d. 1., 15. og 29. — mellemrummet 29. → 1. er 2-4 dage, og en takstperiode udgivet
+# d. 2. lå 13 dage ubemærket. Vi kører derfor ugentligt (mandag). Det er en fast kadence uden drift,
+# og den garanterer at hver 14-dages-udgivelse er hentet inden for en uge. Udgivelsen navngives
+# efter takstperioden, så en uændret kilde opdaterer den samme release i stedet for at lave en ny.
 on:
   schedule:
-    - cron: "0 5 */14 * *"   # ~hver 14. dag kl. 05:00 UTC
+    - cron: "0 5 * * 1"       # hver mandag kl. 05:00 UTC — fanger hver 14-dages-udgivelse
   workflow_dispatch:          # manuel kør (spec: "kør den manuelt først")
 
 permissions:
@@ -24,11 +31,29 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Byg datasæt
-        run: python build_dataset.py --build --out medicinpriser.json.gz
+        run: python build_dataset.py --build --out medicinpriser.json.gz --meta-out meta.json
+
+      - name: Læs takstperiode fra kilden
+        id: meta
+        run: |
+          echo "takstperiode=$(jq -r .takstperiode meta.json)" >> "$GITHUB_OUTPUT"
+          echo "fil=$(jq -r .kilde.fil meta.json)" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(jq -r .kilde.sha256 meta.json)" >> "$GITHUB_OUTPUT"
 
       - name: Udgiv som release-asset
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: medicinpriser-${{ github.run_number }}
-          name: Medicinpris-datasæt ${{ github.run_number }}
-          files: medicinpriser.json.gz
+          tag_name: medicinpriser-${{ steps.meta.outputs.takstperiode }}
+          name: Medicinpris-datasæt · takstperiode ${{ steps.meta.outputs.takstperiode }}
+          make_latest: true
+          body: |
+            Takstperiode: **${{ steps.meta.outputs.takstperiode }}** (datoen dataene stammer fra)
+            Bygget: ${{ github.run_id }} · ${{ github.run_number }}
+
+            Kilde: `${{ steps.meta.outputs.fil }}`
+            SHA-256: `${{ steps.meta.outputs.sha256 }}`
+
+            Kæde: Lægemiddelstyrelsen (data) → Sundhedsdatastyrelsen (udgivelse) → erindra-data (pipeline).
+          files: |
+            medicinpriser.json.gz
+            meta.json
