@@ -2,16 +2,47 @@ name: Medicinpris-datasæt
 
 # Bygger det kompakte on-device datasæt hver 14. dag + manuelt. Vedhæfter det som
 # release-asset som appen henter. Pipeline-filerne ligger i repo-roden (offentligt repo).
+#
+# KADENCE — hvorfor der både er en cron OG et gate-job:
+# Kilden udgives hver 14. dag, mandage (03-08, 17-08, 31-08, 14-09, 28-09-2026 …).
+# Cron kan ikke udtrykke et 14-dages-interval: dag-i-måned-feltet ("*/14") nulstilles hver måned og
+# fyrer d. 1., 15. og 29., og ugedags-feltet kender kun ugen. Derfor fyrer cron'en hver mandag, og
+# "kadence"-jobbet slipper kun hver anden igennem — det er de mandage hvor dagsnummeret siden epoch
+# går op i 14. Nettoresultatet er bogstaveligt hver 14. dag, uden drift, ramt på udgivelsesdagen.
 on:
   schedule:
-    - cron: "0 5 */14 * *"   # ~hver 14. dag kl. 05:00 UTC
+    - cron: "0 5 * * 1"       # hver mandag kl. 05:00 UTC — kadence-jobbet halverer til hver 14. dag
   workflow_dispatch:          # manuel kør (spec: "kør den manuelt først")
 
 permissions:
   contents: write            # til at oprette release + vedhæfte asset
 
 jobs:
+  kadence:
+    runs-on: ubuntu-latest
+    outputs:
+      byg: ${{ steps.check.outputs.byg }}
+    steps:
+      - name: Er i dag en udgivelsesdag (hver 14. dag)?
+        id: check
+        run: |
+          # Manuel kør bygger altid — gaten gælder kun den planlagte kadence.
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "byg=ja" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Dage siden epoch. Udgivelsesdagene (03-08-2026 osv.) har alle rest 4 ved division med
+          # 14, så resten fastholder fasen for evigt uden en tabel over fremtidige datoer.
+          dage=$(( $(date -u +%s) / 86400 ))
+          if [ $(( dage % 14 )) -eq 4 ]; then
+            echo "byg=ja" >> "$GITHUB_OUTPUT"
+          else
+            echo "byg=nej" >> "$GITHUB_OUTPUT"
+            echo "Mellemliggende mandag — næste udgivelse er om 7 dage. Springer over." >&2
+          fi
+
   build:
+    needs: kadence
+    if: needs.kadence.outputs.byg == 'ja'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
